@@ -1,1 +1,0 @@
-Static site bundle for FP CAD Design Services. Upload to Vercel or any static host. Replace brochure PDF as needed.

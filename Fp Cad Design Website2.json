@@ -1,10 +1,13 @@
 import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
 
-// Simple SVG logo component
+// FP CAD Design Services - Single-page React component
+// This file is purely frontend. **Do NOT** include server-side libraries (like googleapis) here.
+// The serverless API `/api/sheets` must live in your Next.js `pages/api` folder as a separate file.
+
 function Logo({ className = "w-10 h-10" }) {
   return (
-    <svg className={className} viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FP CAD Design Services logo">
       <rect x="2" y="2" width="96" height="96" rx="12" fill="#0F4C81" />
       <g transform="translate(18,22)" fill="#fff">
         <path d="M6 50 L18 10 L30 50 Z" />
@@ -17,95 +20,70 @@ function Logo({ className = "w-10 h-10" }) {
 
 export default function HomePage() {
   const [submitted, setSubmitted] = useState(false);
-  const [recaptchaLoaded, setRecaptchaLoaded] = useState(false);
   const [recaptchaKey, setRecaptchaKey] = useState(null);
-  const [selectedLogo, setSelectedLogo] = useState("default");
 
-  // Determine environment values safely on client
+  // Only read env vars on client to avoid `process is not defined` errors during SSR/build
   useEffect(() => {
-    if (typeof window !== "undefined") {
-      const keyClient = window.__FP_ENV?.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || window.NEXT_PUBLIC_RECAPTCHA_SITE_KEY;
-      const key = keyClient || (typeof process !== 'undefined' ? process.env?.NEXT_PUBLIC_RECAPTCHA_SITE_KEY : null) || null;
+    if (typeof window !== 'undefined') {
+      const key = window.__FP_ENV?.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || window.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || null;
       setRecaptchaKey(key);
 
-      // load reCAPTCHA if key present
       if (key && !window.grecaptcha) {
-        const script = document.createElement("script");
-        script.src = "https://www.google.com/recaptcha/api.js";
-        script.async = true;
-        script.defer = true;
-        script.onload = () => setRecaptchaLoaded(true);
-        document.body.appendChild(script);
-      } else if (window.grecaptcha) {
-        setRecaptchaLoaded(true);
+        const s = document.createElement('script');
+        s.src = 'https://www.google.com/recaptcha/api.js';
+        s.async = true;
+        s.defer = true;
+        document.body.appendChild(s);
       }
     }
   }, []);
 
-  // Helper: send submission to Slack webhook if configured
-  async function sendToSlack(formData) {
-    try {
-      const slackWebhook = typeof window !== 'undefined' ? window.__FP_ENV?.NEXT_PUBLIC_SLACK_WEBHOOK || window.NEXT_PUBLIC_SLACK_WEBHOOK : null;
-      if (!slackWebhook) return;
-      const text = `New quote request from ${formData.get('name')} — ${formData.get('company') || 'no company'} — ${formData.get('email')}`;
-      await fetch(slackWebhook, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ text }),
-      });
-    } catch (e) {
-      console.error('Slack send error', e);
-    }
-  }
-
-  // Helper: post to serverless API that writes to Google Sheets (you must create /api/sheets)
-  async function sendToSheets(formData) {
-    try {
-      await fetch('/api/sheets', {
-        method: 'POST',
-        body: JSON.stringify(Object.fromEntries(formData.entries())),
-        headers: { 'Content-Type': 'application/json' },
-      });
-    } catch (e) {
-      console.error('Sheets send error', e);
-    }
-  }
-
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (typeof window === 'undefined') return;
-
     const form = e.target;
     const formData = new FormData(form);
-    const recaptchaToken = window.grecaptcha ? window.grecaptcha.getResponse() : null;
 
-    if (recaptchaKey && !recaptchaToken) {
-      alert("Please complete the reCAPTCHA verification.");
-      return;
+    // If recaptchaKey is set, require verification
+    if (recaptchaKey) {
+      const token = window.grecaptcha ? window.grecaptcha.getResponse() : null;
+      if (!token) {
+        alert('Please complete the reCAPTCHA verification.');
+        return;
+      }
     }
 
     try {
-      const res = await fetch("https://formspree.io/f/mgvejzdo", {
-        method: "POST",
+      // Submit to Formspree (primary)
+      const res = await fetch('https://formspree.io/f/mgvejzdo', {
+        method: 'POST',
         body: formData,
-        headers: { Accept: "application/json" },
+        headers: { Accept: 'application/json' },
       });
-      if (res.ok) {
-        // optional integrations
-        sendToSlack(formData);
-        sendToSheets(formData);
 
-        setSubmitted(true);
-        form.reset();
-        if (window.grecaptcha) window.grecaptcha.reset();
-      } else {
-        const data = await res.json();
-        console.error("Formspree error:", data);
-        alert("Submission failed. Please try again later.");
+      if (!res.ok) {
+        console.error('Formspree error', await res.text());
+        alert('Submission failed. Please try again later.');
+        return;
       }
+
+      // Optionally POST to your server-side API for Sheets (if you implement /api/sheets)
+      try {
+        await fetch('/api/sheets', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(Object.fromEntries(formData.entries())),
+        });
+      } catch (err) {
+        // non-fatal: just log
+        console.warn('Optional /api/sheets call failed:', err?.message || err);
+      }
+
+      setSubmitted(true);
+      form.reset();
+      if (window.grecaptcha) window.grecaptcha.reset();
     } catch (err) {
       console.error(err);
-      alert("Something went wrong. Please try again.");
+      alert('Something went wrong. Please try again.');
     }
   };
 
@@ -131,7 +109,6 @@ export default function HomePage() {
       </header>
 
       <main>
-        {/* Hero */}
         <section className="bg-gradient-to-b from-blue-900 to-blue-800 text-white py-20">
           <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-8 items-center">
             <div>
@@ -158,38 +135,13 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* About */}
         <section id="about" className="py-16">
           <div className="max-w-5xl mx-auto px-6 text-center">
             <h2 className="text-3xl font-semibold text-blue-900 mb-4">About FP CAD Design Services</h2>
             <p className="text-lg text-gray-700">FP CAD Design Services is a professional CAD drafting business based in the Waterloo Region, Ontario. The company specializes in underground telecommunication design, including fiber, conduit, and micro-duct systems. Founded by Fritz Point-Du-Jour, who brings over nine years of experience as a CAD Technician, the business provides precise, permit-ready drawings for telecom companies, engineering firms, and local contractors.</p>
-
-            {/* Logo selector + download brochure */}
-            <div className="mt-8 flex flex-col md:flex-row items-center justify-center gap-6">
-              <div className="text-center">
-                <div className="mb-2 font-medium">Logo options</div>
-                <div className="flex gap-3 items-center">
-                  <button onClick={() => setSelectedLogo('default')} className={`p-2 border rounded ${selectedLogo==='default' ? 'ring-2 ring-blue-500' : ''}`} aria-label="Default logo"><Logo className="w-12 h-12" /></button>
-                  <button onClick={() => setSelectedLogo('monogram')} className={`p-2 border rounded ${selectedLogo==='monogram' ? 'ring-2 ring-blue-500' : ''}`} aria-label="Monogram logo">{/* Monogram */}
-                    <svg className="w-12 h-12" viewBox="0 0 100 100"><circle cx="50" cy="50" r="44" fill="#0F4C81"/><text x="50%" y="58%" fill="#fff" fontSize="34" textAnchor="middle" fontFamily="sans-serif">FP</text></svg>
-                  </button>
-                  <button onClick={() => setSelectedLogo('geo')} className={`p-2 border rounded ${selectedLogo==='geo' ? 'ring-2 ring-blue-500' : ''}`} aria-label="Geometric logo">{/* Geometric */}
-                    <svg className="w-12 h-12" viewBox="0 0 100 100"><rect x="10" y="10" width="80" height="80" rx="14" fill="#0F4C81"/><polygon points="30,70 50,20 70,70" fill="#fff"/></svg>
-                  </button>
-                </div>
-                <div className="mt-3 text-xs text-gray-500">Selected: {selectedLogo}</div>
-              </div>
-
-              <div className="text-center">
-                <div className="mb-2 font-medium">Brochure</div>
-                <a href="/assets/FP-CAD-Brochure.pdf" download className="inline-block bg-blue-900 text-white px-4 py-2 rounded">Download PDF</a>
-                <div className="text-xs text-gray-500 mt-2">Placeholder brochure (replace /assets/FP-CAD-Brochure.pdf with your brochure)</div>
-              </div>
-            </div>
           </div>
         </section>
 
-        {/* Services */}
         <section id="services" className="py-16 bg-gray-50">
           <div className="max-w-6xl mx-auto px-6">
             <h2 className="text-3xl font-semibold text-center text-blue-900 mb-8">Our Services</h2>
@@ -210,7 +162,6 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Quote Form */}
         <section id="quote" className="py-16">
           <div className="max-w-3xl mx-auto px-6">
             <h2 className="text-2xl font-semibold text-center text-blue-900 mb-4">Request a Quote</h2>
@@ -226,11 +177,9 @@ export default function HomePage() {
                   <input name="company" placeholder="Company (optional)" className="border rounded-md p-3" />
                   <textarea name="message" required placeholder="Project details (scope, locations, deliverables)" className="border rounded-md p-3 h-32"></textarea>
 
-                  {/* Formspree auto-response and hidden fields */}
                   <input type="hidden" name="_autoresponse" value="Thank you for contacting FP CAD Design Services. We’ve received your message and will get back to you soon." />
                   <input type="hidden" name="_subject" value="New project quote request" />
 
-                  {/* reCAPTCHA placeholder — appears only if recaptchaKey is set */}
                   {recaptchaKey && <div className="g-recaptcha" data-sitekey={recaptchaKey}></div>}
 
                   <div className="flex justify-between items-center">
@@ -247,7 +196,6 @@ export default function HomePage() {
           </div>
         </section>
 
-        {/* Contact */}
         <section id="contact" className="py-12 bg-blue-900 text-white">
           <div className="max-w-4xl mx-auto px-6 text-center">
             <h3 className="text-xl font-semibold mb-2">Contact</h3>
@@ -264,3 +212,94 @@ export default function HomePage() {
     </div>
   );
 }
+
+/*
+Serverless API (Now with reCAPTCHA verification + Slack notifications + Email confirmation) (Next.js) - separate file
+--------------------------------------
+Create a new file at: `pages/api/sheets.js` (or `src/pages/api/sheets.js`)
+
+Paste the code below into that file. This code will run only on the server and will NOT be bundled with your frontend.
+
+// pages/api/sheets.js
+import { google } from 'googleapis';
+
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
+
+  try {
+    const body = req.body && Object.keys(req.body).length ? req.body : JSON.parse(req.body || '{}');
+    const { name, email, company, message, recaptchaToken } = body;
+
+    // 1️⃣ Verify reCAPTCHA
+    const recaptchaSecret = process.env.RECAPTCHA_SECRET_KEY;
+    const recaptchaRes = await fetch(`https://www.google.com/recaptcha/api/siteverify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: `secret=${recaptchaSecret}&response=${recaptchaToken}`
+    }).then(r => r.json());
+
+    if (!recaptchaRes.success) {
+      return res.status(400).json({ error: 'reCAPTCHA verification failed' });
+    }
+
+    // 2️⃣ Log to Google Sheets
+    const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
+    const spreadsheetId = process.env.SHEET_ID;
+    const client = new google.auth.JWT(
+      creds.client_email,
+      null,
+      creds.private_key,
+      ['https://www.googleapis.com/auth/spreadsheets']
+    );
+
+    await client.authorize();
+    const sheets = google.sheets({ version: 'v4', auth: client });
+
+    const row = [new Date().toISOString(), name || '', email || '', company || '', message || ''];
+    await sheets.spreadsheets.values.append({
+      spreadsheetId,
+      range: 'Sheet1!A:E',
+      valueInputOption: 'RAW',
+      requestBody: { values: [row] }
+    });
+
+    // 3️⃣ Send Slack notification
+    const slackWebhook = process.env.SLACK_WEBHOOK_URL;
+    if (slackWebhook) {
+      await fetch(slackWebhook, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: `📬 New FP CAD submission:
+Name: ${name}
+Email: ${email}
+Company: ${company}
+Message: ${message}`
+        })
+      });
+    }
+
+    // 4️⃣ Automatic confirmation email via Formspree
+    await fetch(`https://formspree.io/f/mgvejzdo`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      body: JSON.stringify({
+        email,
+        _subject: 'We received your request – FP CAD Design Services',
+        message: `Hi ${name},
+
+Thank you for reaching out! We have received your message and will respond shortly.
+
+— FP CAD Design Services`
+      })
+    });
+
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('Sheets API error:', err);
+    return res.status(500).json({ error: 'Internal server error', details: err.message || err });
+  }
+}
+
+*/
+

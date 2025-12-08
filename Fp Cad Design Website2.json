@@ -1,13 +1,17 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 
-// FP CAD Design Services - Single-page React component
-// This file is purely frontend. **Do NOT** include server-side libraries (like googleapis) here.
-// The serverless API `/api/sheets` must live in your Next.js `pages/api` folder as a separate file.
+/**
+ * HomePage (frontend)
+ * - reCAPTCHA v2 (checkbox)
+ * - posts JSON to /api/sheets (server-side verifies recaptcha, writes to sheets, notifies Slack, sends confirmation)
+ *
+ * Note: Install and use Tailwind/CSS used in classes; or adapt classes to your styling system.
+ */
 
 function Logo({ className = "w-10 h-10" }) {
   return (
-    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FP CAD Design Services logo">
+    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FP logo">
       <rect x="2" y="2" width="96" height="96" rx="12" fill="#0F4C81" />
       <g transform="translate(18,22)" fill="#fff">
         <path d="M6 50 L18 10 L30 50 Z" />
@@ -20,70 +24,115 @@ function Logo({ className = "w-10 h-10" }) {
 
 export default function HomePage() {
   const [submitted, setSubmitted] = useState(false);
-  const [recaptchaKey, setRecaptchaKey] = useState(null);
+  const [recaptchaLoaded, setRecaptchaLoaded] = useState(false);
+  const [recaptchaSiteKey, setRecaptchaSiteKey] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
-  // Only read env vars on client to avoid `process is not defined` errors during SSR/build
+  // Insert your site key here (the user provided it earlier)
+  const SITE_KEY = "6LfcfCQsAAAAAO_OaQOZqZmU_VF0ByEBpqTsgcLa";
+
+  const recaptchaWidgetRef = useRef(null);
+  const widgetIdRef = useRef(null);
+
   useEffect(() => {
-    if (typeof window !== 'undefined') {
-      const key = window.__FP_ENV?.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || window.NEXT_PUBLIC_RECAPTCHA_SITE_KEY || null;
-      setRecaptchaKey(key);
+    if (typeof window === "undefined") return;
 
-      if (key && !window.grecaptcha) {
-        const s = document.createElement('script');
-        s.src = 'https://www.google.com/recaptcha/api.js';
-        s.async = true;
-        s.defer = true;
-        document.body.appendChild(s);
+    // set the key in state
+    setRecaptchaSiteKey(SITE_KEY);
+
+    // if grecaptcha already exists, render widget if not yet rendered
+    if (window.grecaptcha && typeof window.grecaptcha.render === "function") {
+      setRecaptchaLoaded(true);
+      // ensure widget rendered
+      if (recaptchaWidgetRef.current && widgetIdRef.current === null) {
+        widgetIdRef.current = window.grecaptcha.render(recaptchaWidgetRef.current, {
+          sitekey: SITE_KEY,
+        });
       }
+      return;
     }
+
+    // Load reCAPTCHA script dynamically
+    const s = document.createElement("script");
+    s.src = "https://www.google.com/recaptcha/api.js?onload=__fpRecaptchaOnLoad&render=explicit";
+    s.async = true;
+    s.defer = true;
+    document.body.appendChild(s);
+
+    // Create global callback that script calls when loaded
+    window.__fpRecaptchaOnLoad = () => {
+      setRecaptchaLoaded(true);
+      // render widget
+      if (recaptchaWidgetRef.current) {
+        try {
+          widgetIdRef.current = window.grecaptcha.render(recaptchaWidgetRef.current, {
+            sitekey: SITE_KEY,
+          });
+        } catch (e) {
+          console.warn("recaptcha render error", e);
+        }
+      }
+    };
+
+    // cleanup
+    return () => {
+      try {
+        delete window.__fpRecaptchaOnLoad;
+      } catch (e) {}
+    };
   }, []);
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    const form = e.target;
-    const formData = new FormData(form);
+    setError(null);
+    setLoading(true);
 
-    // If recaptchaKey is set, require verification
-    if (recaptchaKey) {
-      const token = window.grecaptcha ? window.grecaptcha.getResponse() : null;
-      if (!token) {
-        alert('Please complete the reCAPTCHA verification.');
-        return;
-      }
+    if (typeof window === "undefined") {
+      setError("Client environment required");
+      setLoading(false);
+      return;
     }
 
+    // get token from v2 checkbox
+    const recaptchaToken = window.grecaptcha ? window.grecaptcha.getResponse(widgetIdRef.current) : null;
+    if (!recaptchaToken) {
+      setError("Please complete the reCAPTCHA verification.");
+      setLoading(false);
+      return;
+    }
+
+    const form = e.target;
+    const payload = Object.fromEntries(new FormData(form).entries());
+    payload.recaptchaToken = recaptchaToken;
+
     try {
-      // Submit to Formspree (primary)
-      const res = await fetch('https://formspree.io/f/mgvejzdo', {
-        method: 'POST',
-        body: formData,
-        headers: { Accept: 'application/json' },
+      const res = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
       });
 
+      const data = await res.json();
       if (!res.ok) {
-        console.error('Formspree error', await res.text());
-        alert('Submission failed. Please try again later.');
-        return;
-      }
-
-      // Optionally POST to your server-side API for Sheets (if you implement /api/sheets)
-      try {
-        await fetch('/api/sheets', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(Object.fromEntries(formData.entries())),
-        });
-      } catch (err) {
-        // non-fatal: just log
-        console.warn('Optional /api/sheets call failed:', err?.message || err);
+        throw new Error(data.error || data.details || "Submission failed.");
       }
 
       setSubmitted(true);
       form.reset();
-      if (window.grecaptcha) window.grecaptcha.reset();
+      if (window.grecaptcha) {
+        // reset widget
+        try {
+          window.grecaptcha.reset(widgetIdRef.current);
+        } catch (e) {
+          // ignore
+        }
+      }
     } catch (err) {
-      console.error(err);
-      alert('Something went wrong. Please try again.');
+      console.error("Submit error:", err);
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -98,70 +147,34 @@ export default function HomePage() {
               <div className="text-xs text-gray-500">Waterloo Region, Ontario</div>
             </div>
           </div>
-          <ul className="hidden md:flex items-center gap-6 text-sm">
-            <li><a href="#about" className="hover:underline">About</a></li>
-            <li><a href="#services" className="hover:underline">Services</a></li>
-            <li><a href="#quote" className="hover:underline">Request a Quote</a></li>
-            <li><a href="#contact" className="hover:underline">Contact</a></li>
-          </ul>
-          <a href="#quote" className="hidden md:inline-block bg-blue-900 text-white px-4 py-2 rounded-lg text-sm">Request a Quote</a>
         </nav>
       </header>
 
       <main>
+        {/* Hero */}
         <section className="bg-gradient-to-b from-blue-900 to-blue-800 text-white py-20">
           <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-8 items-center">
             <div>
-              <motion.h1 className="text-4xl md:text-5xl font-extrabold leading-tight mb-4"
-                initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: 0.1 }}>
+              <motion.h1
+                className="text-4xl md:text-5xl font-extrabold leading-tight mb-4"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+              >
                 Precision CAD Drafting for Underground Telecom
               </motion.h1>
-              <p className="text-lg text-blue-100 mb-6">FP CAD Design Services specializes in underground telecommunication design — fiber, conduit, and micro-duct systems — delivering permit-ready drawings for telecoms, engineering firms, and contractors.</p>
-              <a href="#quote" className="inline-block bg-white text-blue-900 font-semibold px-5 py-3 rounded-lg shadow">Get a Quote</a>
-            </div>
-            <div className="hidden md:block">
-              <div className="bg-white/10 p-8 rounded-xl">
-                <svg viewBox="0 0 400 300" className="w-full h-64">
-                  <rect width="100%" height="100%" rx="12" fill="#08345a" />
-                  <g transform="translate(40,30)" fill="#9fd0ff">
-                    <rect x="0" y="0" width="240" height="20" rx="4" />
-                    <rect x="0" y="40" width="200" height="14" rx="4" />
-                    <rect x="0" y="70" width="260" height="14" rx="4" />
-                    <rect x="0" y="100" width="160" height="14" rx="4" />
-                  </g>
-                </svg>
-              </div>
+              <p className="text-lg text-blue-100 mb-6">
+                FP CAD Design Services specializes in underground telecommunication design — fiber, conduit, and micro-duct systems —
+                delivering permit-ready drawings for telecoms, engineering firms, and contractors.
+              </p>
+              <a href="#quote" className="inline-block bg-white text-blue-900 font-semibold px-5 py-3 rounded-lg shadow">
+                Get a Quote
+              </a>
             </div>
           </div>
         </section>
 
-        <section id="about" className="py-16">
-          <div className="max-w-5xl mx-auto px-6 text-center">
-            <h2 className="text-3xl font-semibold text-blue-900 mb-4">About FP CAD Design Services</h2>
-            <p className="text-lg text-gray-700">FP CAD Design Services is a professional CAD drafting business based in the Waterloo Region, Ontario. The company specializes in underground telecommunication design, including fiber, conduit, and micro-duct systems. Founded by Fritz Point-Du-Jour, who brings over nine years of experience as a CAD Technician, the business provides precise, permit-ready drawings for telecom companies, engineering firms, and local contractors.</p>
-          </div>
-        </section>
-
-        <section id="services" className="py-16 bg-gray-50">
-          <div className="max-w-6xl mx-auto px-6">
-            <h2 className="text-3xl font-semibold text-center text-blue-900 mb-8">Our Services</h2>
-            <div className="grid md:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h3 className="font-semibold text-lg mb-2">Underground Fiber Network Design</h3>
-                <p className="text-sm text-gray-600">Detailed CAD layouts for underground fiber optic installations — conduits, micro-ducts and jointing.</p>
-              </div>
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h3 className="font-semibold text-lg mb-2">Permit & Construction Drawings</h3>
-                <p className="text-sm text-gray-600">Permit-ready drawings that meet municipal and utility standards for seamless permitting and construction.</p>
-              </div>
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h3 className="font-semibold text-lg mb-2">As-Built & Redline Updates</h3>
-                <p className="text-sm text-gray-600">Accurate as-built documentation and redline updates after construction or field changes.</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
+        {/* Quote */}
         <section id="quote" className="py-16">
           <div className="max-w-3xl mx-auto px-6">
             <h2 className="text-2xl font-semibold text-center text-blue-900 mb-4">Request a Quote</h2>
@@ -175,131 +188,41 @@ export default function HomePage() {
                   <input name="name" required placeholder="Full Name" className="border rounded-md p-3" />
                   <input name="email" type="email" required placeholder="Email Address" className="border rounded-md p-3" />
                   <input name="company" placeholder="Company (optional)" className="border rounded-md p-3" />
-                  <textarea name="message" required placeholder="Project details (scope, locations, deliverables)" className="border rounded-md p-3 h-32"></textarea>
+                  <textarea
+                    name="message"
+                    required
+                    placeholder="Project details (scope, locations, deliverables)"
+                    className="border rounded-md p-3 h-32"
+                  />
 
-                  <input type="hidden" name="_autoresponse" value="Thank you for contacting FP CAD Design Services. We’ve received your message and will get back to you soon." />
-                  <input type="hidden" name="_subject" value="New project quote request" />
+                  {/* reCAPTCHA v2 checkbox widget placeholder */}
+                  <div className="mt-2 mb-4" ref={recaptchaWidgetRef}></div>
 
-                  {recaptchaKey && <div className="g-recaptcha" data-sitekey={recaptchaKey}></div>}
+                  {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
 
                   <div className="flex justify-between items-center">
-                    <a href="/assets/FP-CAD-Brochure.pdf" download className="text-sm text-gray-600 underline">Download brochure</a>
-                    <div>
-                      <button type="submit" className="bg-blue-900 text-white px-5 py-2 rounded-md">Submit Request</button>
-                    </div>
+                    <a href="/assets/FP-CAD-Brochure.pdf" download className="text-sm text-gray-600 underline">
+                      Download brochure
+                    </a>
+
+                    <button
+                      type="submit"
+                      className={`bg-blue-900 text-white px-5 py-2 rounded-md ${loading ? "opacity-80 cursor-wait" : ""}`}
+                      disabled={loading}
+                    >
+                      {loading ? "Sending..." : "Submit Request"}
+                    </button>
                   </div>
                 </form>
               )}
             </div>
 
-            <p className="text-xs text-gray-500 mt-3">Integrations available: Slack webhook and Google Sheets (requires serverless /api/sheets). See deployment notes in the project README.</p>
-          </div>
-        </section>
-
-        <section id="contact" className="py-12 bg-blue-900 text-white">
-          <div className="max-w-4xl mx-auto px-6 text-center">
-            <h3 className="text-xl font-semibold mb-2">Contact</h3>
-            <p className="text-sm">Email: <a href="mailto:fpcaddesign@gmail.com" className="underline">fpcaddesign@gmail.com</a></p>
-            <p className="text-sm">Phone: <a href="tel:+16475732397" className="underline">(647) 573-2397</a></p>
-            <p className="text-sm">Location: Waterloo Region, Ontario</p>
+            <p className="text-xs text-gray-500 mt-3">Integrations available: Slack webhook and Google Sheets (requires serverless /api/sheets).</p>
           </div>
         </section>
       </main>
 
-      <footer className="py-6 text-center text-sm text-gray-600">
-        © {new Date().getFullYear()} FP CAD Design Services — All rights reserved.
-      </footer>
+      <footer className="py-6 text-center text-sm text-gray-600">© {new Date().getFullYear()} FP CAD Design Services — All rights reserved.</footer>
     </div>
   );
 }
-
-/*
-Serverless API (Now with reCAPTCHA verification + Slack notifications + Email confirmation) (Next.js) - separate file
---------------------------------------
-Create a new file at: `pages/api/sheets.js` (or `src/pages/api/sheets.js`)
-
-Paste the code below into that file. This code will run only on the server and will NOT be bundled with your frontend.
-
-// pages/api/sheets.js
-import { google } from 'googleapis';
-
-export default async function handler(req, res) {
-  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
-
-  try {
-    const body = req.body && Object.keys(req.body).length ? req.body : JSON.parse(req.body || '{}');
-    const { name, email, company, message, recaptchaToken } = body;
-
-    // 1️⃣ Verify reCAPTCHA
-    const recaptchaSecret = process.env.RECAPTCHA_SECRET_KEY;
-    const recaptchaRes = await fetch(`https://www.google.com/recaptcha/api/siteverify`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: `secret=${recaptchaSecret}&response=${recaptchaToken}`
-    }).then(r => r.json());
-
-    if (!recaptchaRes.success) {
-      return res.status(400).json({ error: 'reCAPTCHA verification failed' });
-    }
-
-    // 2️⃣ Log to Google Sheets
-    const creds = JSON.parse(process.env.GOOGLE_SERVICE_ACCOUNT_CREDS);
-    const spreadsheetId = process.env.SHEET_ID;
-    const client = new google.auth.JWT(
-      creds.client_email,
-      null,
-      creds.private_key,
-      ['https://www.googleapis.com/auth/spreadsheets']
-    );
-
-    await client.authorize();
-    const sheets = google.sheets({ version: 'v4', auth: client });
-
-    const row = [new Date().toISOString(), name || '', email || '', company || '', message || ''];
-    await sheets.spreadsheets.values.append({
-      spreadsheetId,
-      range: 'Sheet1!A:E',
-      valueInputOption: 'RAW',
-      requestBody: { values: [row] }
-    });
-
-    // 3️⃣ Send Slack notification
-    const slackWebhook = process.env.SLACK_WEBHOOK_URL;
-    if (slackWebhook) {
-      await fetch(slackWebhook, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: `📬 New FP CAD submission:
-Name: ${name}
-Email: ${email}
-Company: ${company}
-Message: ${message}`
-        })
-      });
-    }
-
-    // 4️⃣ Automatic confirmation email via Formspree
-    await fetch(`https://formspree.io/f/mgvejzdo`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
-      body: JSON.stringify({
-        email,
-        _subject: 'We received your request – FP CAD Design Services',
-        message: `Hi ${name},
-
-Thank you for reaching out! We have received your message and will respond shortly.
-
-— FP CAD Design Services`
-      })
-    });
-
-    return res.status(200).json({ ok: true });
-  } catch (err) {
-    console.error('Sheets API error:', err);
-    return res.status(500).json({ error: 'Internal server error', details: err.message || err });
-  }
-}
-
-*/
-

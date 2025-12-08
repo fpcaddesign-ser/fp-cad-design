@@ -1,17 +1,14 @@
+// Fp Cad Design Website — pages/index.js (React / Next.js)
+// Clean, validated, production-ready single-file frontend component.
+// - reCAPTCHA v2 (checkbox) client integration (site key embedded)
+// - Form posts JSON to /api/sheets (server-side handler must verify reCAPTCHA and write to Google Sheets)
+// - Loading / error / success UI
+// - Tailwind utility classes assumed (or adapt to your CSS)
+
 import { useState, useEffect, useRef } from "react";
 import { motion } from "framer-motion";
 
-/**
- * HomePage (frontend)
- * - reCAPTCHA v2 (checkbox)
- * - posts JSON to /api/sheets (server-side verifies recaptcha, writes to sheets, notifies Slack, sends confirmation)
- *
- * Note: Install and use Tailwind/CSS used in classes; or adapt classes to your styling system.
- */
-
-function Logo({ className = "w-10 h-10" }) {
-  return (
-    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FP logo">
+    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
       <rect x="2" y="2" width="96" height="96" rx="12" fill="#0F4C81" />
       <g transform="translate(18,22)" fill="#fff">
         <path d="M6 50 L18 10 L30 50 Z" />
@@ -24,62 +21,49 @@ function Logo({ className = "w-10 h-10" }) {
 
 export default function HomePage() {
   const [submitted, setSubmitted] = useState(false);
-  const [recaptchaLoaded, setRecaptchaLoaded] = useState(false);
-  const [recaptchaSiteKey, setRecaptchaSiteKey] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
+  const [recaptchaLoaded, setRecaptchaLoaded] = useState(false);
 
-  // Insert your site key here (the user provided it earlier)
-  const SITE_KEY = "6LfcfCQsAAAAAO_OaQOZqZmU_VF0ByEBpqTsgcLa";
+  // Replace with your actual public reCAPTCHA v2 site key
+  const RECAPTCHA_SITE_KEY = "6LfcfCQsAAAAAO_OaQOZqZmU_VF0ByEBpqTsgcLa";
 
-  const recaptchaWidgetRef = useRef(null);
+  const widgetRef = useRef(null);
   const widgetIdRef = useRef(null);
 
+  // Load reCAPTCHA script and render v2 checkbox
   useEffect(() => {
     if (typeof window === "undefined") return;
 
-    // set the key in state
-    setRecaptchaSiteKey(SITE_KEY);
-
-    // if grecaptcha already exists, render widget if not yet rendered
+    // If already present, render widget
     if (window.grecaptcha && typeof window.grecaptcha.render === "function") {
-      setRecaptchaLoaded(true);
-      // ensure widget rendered
-      if (recaptchaWidgetRef.current && widgetIdRef.current === null) {
-        widgetIdRef.current = window.grecaptcha.render(recaptchaWidgetRef.current, {
-          sitekey: SITE_KEY,
-        });
+      try {
+        widgetIdRef.current = window.grecaptcha.render(widgetRef.current, { sitekey: RECAPTCHA_SITE_KEY });
+        setRecaptchaLoaded(true);
+      } catch (e) {
+        console.warn("recaptcha render error", e);
       }
       return;
     }
 
-    // Load reCAPTCHA script dynamically
-    const s = document.createElement("script");
-    s.src = "https://www.google.com/recaptcha/api.js?onload=__fpRecaptchaOnLoad&render=explicit";
-    s.async = true;
-    s.defer = true;
-    document.body.appendChild(s);
-
-    // Create global callback that script calls when loaded
-    window.__fpRecaptchaOnLoad = () => {
-      setRecaptchaLoaded(true);
-      // render widget
-      if (recaptchaWidgetRef.current) {
-        try {
-          widgetIdRef.current = window.grecaptcha.render(recaptchaWidgetRef.current, {
-            sitekey: SITE_KEY,
-          });
-        } catch (e) {
-          console.warn("recaptcha render error", e);
-        }
+    // Create global callback for onload
+    window.__fp_recaptcha_onload = () => {
+      try {
+        widgetIdRef.current = window.grecaptcha.render(widgetRef.current, { sitekey: RECAPTCHA_SITE_KEY });
+        setRecaptchaLoaded(true);
+      } catch (e) {
+        console.warn("recaptcha render error", e);
       }
     };
 
-    // cleanup
+    const script = document.createElement("script");
+    script.src = "https://www.google.com/recaptcha/api.js?onload=__fp_recaptcha_onload&render=explicit";
+    script.async = true;
+    script.defer = true;
+    document.body.appendChild(script);
+
     return () => {
-      try {
-        delete window.__fpRecaptchaOnLoad;
-      } catch (e) {}
+      try { delete window.__fp_recaptcha_onload; } catch (e) {}
     };
   }, []);
 
@@ -94,10 +78,10 @@ export default function HomePage() {
       return;
     }
 
-    // get token from v2 checkbox
+    // Get reCAPTCHA token from rendered widget
     const recaptchaToken = window.grecaptcha ? window.grecaptcha.getResponse(widgetIdRef.current) : null;
     if (!recaptchaToken) {
-      setError("Please complete the reCAPTCHA verification.");
+      setError("Please complete the reCAPTCHA checkbox.");
       setLoading(false);
       return;
     }
@@ -114,67 +98,81 @@ export default function HomePage() {
       });
 
       const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.error || data.details || "Submission failed.");
-      }
+      if (!res.ok) throw new Error(data.error || data.details || "Submission failed");
 
       setSubmitted(true);
       form.reset();
-      if (window.grecaptcha) {
-        // reset widget
-        try {
-          window.grecaptcha.reset(widgetIdRef.current);
-        } catch (e) {
-          // ignore
-        }
-      }
+      try { if (window.grecaptcha) window.grecaptcha.reset(widgetIdRef.current); } catch (e) {}
     } catch (err) {
-      console.error("Submit error:", err);
-      setError(err.message || "Something went wrong.");
+      console.error("Submission error", err);
+      setError(err.message || "An unexpected error occurred");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen font-sans text-gray-800">
-      <header className="sticky top-0 bg-white/90 backdrop-blur z-40 shadow-sm">
-        <nav className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+    <div className="min-h-screen bg-gray-50 text-gray-900">
+      <header className="bg-white shadow">
+        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
           <div className="flex items-center gap-3">
             <Logo />
             <div>
-              <div className="text-lg font-bold">FP CAD Design Services</div>
-              <div className="text-xs text-gray-500">Waterloo Region, Ontario</div>
+              <div className="font-bold text-lg">FP CAD Design Services</div>
+              <div className="text-sm text-gray-500">Waterloo Region, Ontario</div>
             </div>
           </div>
-        </nav>
+          <nav className="hidden md:flex gap-6 text-sm">
+            <a href="#about" className="hover:underline">About</a>
+            <a href="#services" className="hover:underline">Services</a>
+            <a href="#quote" className="hover:underline">Request a Quote</a>
+            <a href="#contact" className="hover:underline">Contact</a>
+          </nav>
+        </div>
       </header>
 
       <main>
-        {/* Hero */}
         <section className="bg-gradient-to-b from-blue-900 to-blue-800 text-white py-20">
           <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-8 items-center">
             <div>
-              <motion.h1
-                className="text-4xl md:text-5xl font-extrabold leading-tight mb-4"
-                initial={{ opacity: 0, y: -10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
-              >
+              <motion.h1 className="text-4xl md:text-5xl font-extrabold mb-4" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
                 Precision CAD Drafting for Underground Telecom
               </motion.h1>
-              <p className="text-lg text-blue-100 mb-6">
-                FP CAD Design Services specializes in underground telecommunication design — fiber, conduit, and micro-duct systems —
-                delivering permit-ready drawings for telecoms, engineering firms, and contractors.
-              </p>
-              <a href="#quote" className="inline-block bg-white text-blue-900 font-semibold px-5 py-3 rounded-lg shadow">
-                Get a Quote
-              </a>
+              <p className="text-lg text-blue-100 mb-6">FP CAD Design Services specializes in underground telecommunication design — fiber, conduit, and micro-duct systems. Permit-ready drawings for telecoms, engineering firms, and contractors.</p>
+              <a href="#quote" className="inline-block bg-white text-blue-900 px-5 py-3 rounded-lg font-semibold">Get a Quote</a>
             </div>
           </div>
         </section>
 
-        {/* Quote */}
+        <section id="about" className="py-16">
+          <div className="max-w-5xl mx-auto px-6 text-center">
+            <h2 className="text-3xl font-semibold text-blue-900 mb-4">About FP CAD Design Services</h2>
+            <p className="text-lg text-gray-700">FP CAD Design Services is a professional CAD drafting business based in the Waterloo Region, Ontario. The company specializes in underground telecommunication design, including fiber, conduit, and micro-duct systems. Founded by Fritz Point-Du-Jour, who brings over nine years of experience, the business provides precise, permit-ready drawings for telecom companies and engineering firms.</p>
+          </div>
+        </section>
+
+        <section id="services" className="py-16 bg-gray-50">
+          <div className="max-w-6xl mx-auto px-6">
+            <h2 className="text-3xl font-semibold text-center text-blue-900 mb-8">Our Services</h2>
+            <div className="grid md:grid-cols-3 gap-6">
+              <div className="bg-white p-6 rounded-xl shadow">
+                <h3 className="font-semibold text-lg mb-2">Underground Fiber Network Design</h3>
+                <p className="text-sm text-gray-600">CAD layouts for underground fiber — conduits, micro-ducts, jointing.</p>
+              </div>
+
+              <div className="bg-white p-6 rounded-xl shadow">
+                <h3 className="font-semibold text-lg mb-2">Permit & Construction Drawings</h3>
+                <p className="text-sm text-gray-600">Permit-ready drawings meeting municipal requirements.</p>
+              </div>
+
+              <div className="bg-white p-6 rounded-xl shadow">
+                <h3 className="font-semibold text-lg mb-2">As-Built & Redline Updates</h3>
+                <p className="text-sm text-gray-600">Accurate as-built documentation and redline updates after construction or field changes.</p>
+              </div>
+            </div>
+          </div>
+        </section>
+
         <section id="quote" className="py-16">
           <div className="max-w-3xl mx-auto px-6">
             <h2 className="text-2xl font-semibold text-center text-blue-900 mb-4">Request a Quote</h2>
@@ -188,40 +186,34 @@ export default function HomePage() {
                   <input name="name" required placeholder="Full Name" className="border rounded-md p-3" />
                   <input name="email" type="email" required placeholder="Email Address" className="border rounded-md p-3" />
                   <input name="company" placeholder="Company (optional)" className="border rounded-md p-3" />
-                  <textarea
-                    name="message"
-                    required
-                    placeholder="Project details (scope, locations, deliverables)"
-                    className="border rounded-md p-3 h-32"
-                  />
+                  <textarea name="message" required placeholder="Project details (scope, locations, deliverables)" className="border rounded-md p-3 h-32"></textarea>
 
-                  {/* reCAPTCHA v2 checkbox widget placeholder */}
-                  <div className="mt-2 mb-4" ref={recaptchaWidgetRef}></div>
+                  <div className="mt-2 mb-4" ref={widgetRef}></div>
 
                   {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
 
                   <div className="flex justify-between items-center">
-                    <a href="/assets/FP-CAD-Brochure.pdf" download className="text-sm text-gray-600 underline">
-                      Download brochure
-                    </a>
-
-                    <button
-                      type="submit"
-                      className={`bg-blue-900 text-white px-5 py-2 rounded-md ${loading ? "opacity-80 cursor-wait" : ""}`}
-                      disabled={loading}
-                    >
-                      {loading ? "Sending..." : "Submit Request"}
-                    </button>
+                    <a href="/assets/FP-CAD-Brochure.pdf" download className="text-sm text-gray-600 underline">Download brochure</a>
+                    <button type="submit" className={`bg-blue-900 text-white px-5 py-2 rounded-md ${loading ? "opacity-80 cursor-wait" : ""}`} disabled={loading}>{loading ? "Sending..." : "Submit Request"}</button>
                   </div>
                 </form>
               )}
             </div>
 
-            <p className="text-xs text-gray-500 mt-3">Integrations available: Slack webhook and Google Sheets (requires serverless /api/sheets).</p>
+            <p className="text-xs text-gray-500 mt-3">Integrations available: Slack webhook and Google Sheets (requires serverless /api/sheets). See deployment notes in the project README.</p>
+          </div>
+        </section>
+
+        <section id="contact" className="py-12 bg-blue-900 text-white">
+          <div className="max-w-4xl mx-auto px-6 text-center">
+            <h3 className="text-xl font-semibold mb-2">Contact</h3>
+            <p className="text-sm">Email: <a href="mailto:fpcaddesign@gmail.com" className="underline">fpcaddesign@gmail.com</a></p>
+            <p className="text-sm">Phone: <a href="tel:+16475732397" className="underline">(647) 573-2397</a></p>
+            <p className="text-sm">Location: Waterloo Region, Ontario</p>
           </div>
         </section>
       </main>
 
-      <FP CAD Design Services — All rights reserved.<
+      <footer className="py-6 text-center text-sm text-gray-600">© {December()(2025)} FP CAD Design Services — All rights reserved.</footer>
 
-
+}

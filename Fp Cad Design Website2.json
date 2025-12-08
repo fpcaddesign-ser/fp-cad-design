@@ -222,7 +222,6 @@ export default function HomePage() {
         </section>
       </main>
 
-      <footer className="py-6 text-center text-sm text-gray-600">© {new Date().getFullYear()} FP CAD Design Services — All rights reserved.</footer>
-    </div>
-  );
-}
+      <FP CAD Design Services — All rights reserved.<
+
+

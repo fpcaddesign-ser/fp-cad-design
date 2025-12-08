@@ -1,0 +1,229 @@
+
+import { useState, useEffect, useRef } from "react";
+import { motion } from "framer-motion";
+
+/**
+ * HomePage (frontend)
+ * - reCAPTCHA v2 (checkbox)
+ * - posts JSON to /api/sheets (server-side verifies recaptcha, writes to sheets, notifies Slack, sends confirmation)
+ *
+ * Note: Install and use Tailwind/CSS used in classes; or adapt classes to your styling system.
+ */
+
+function Logo({ className = "w-10 h-10" }) {
+  return (
+    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="FP logo">
+      <rect x="2" y="2" width="96" height="96" rx="12" fill="#0F4C81" />
+      <g transform="translate(18,22)" fill="#fff">
+        <path d="M6 50 L18 10 L30 50 Z" />
+        <rect x="36" y="10" width="8" height="40" rx="2" />
+        <rect x="54" y="10" width="8" height="40" rx="2" />
+      </g>
+    </svg>
+  );
+}
+
+export default function HomePage() {
+  const [submitted, setSubmitted] = useState(false);
+  const [recaptchaLoaded, setRecaptchaLoaded] = useState(false);
+  const [recaptchaSiteKey, setRecaptchaSiteKey] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  // Insert your site key here (the user provided it earlier)
+  const SITE_KEY = "6LfcfCQsAAAAAO_OaQOZqZmU_VF0ByEBpqTsgcLa";
+
+  const recaptchaWidgetRef = useRef(null);
+  const widgetIdRef = useRef(null);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+
+    // set the key in state
+    setRecaptchaSiteKey(SITE_KEY);
+
+    // if grecaptcha already exists, render widget if not yet rendered
+    if (window.grecaptcha && typeof window.grecaptcha.render === "function") {
+      setRecaptchaLoaded(true);
+      // ensure widget rendered
+      if (recaptchaWidgetRef.current && widgetIdRef.current === null) {
+        widgetIdRef.current = window.grecaptcha.render(recaptchaWidgetRef.current, {
+          sitekey: SITE_KEY,
+        });
+      }
+      return;
+    }
+
+    // Load reCAPTCHA script dynamically
+    const s = document.createElement("script");
+    s.src = "https://www.google.com/recaptcha/api.js?onload=__fpRecaptchaOnLoad&render=explicit";
+    s.async = true;
+    s.defer = true;
+    document.body.appendChild(s);
+
+    // Create global callback that script calls when loaded
+    window.__fpRecaptchaOnLoad = () => {
+      setRecaptchaLoaded(true);
+      // render widget
+      if (recaptchaWidgetRef.current) {
+        try {
+          widgetIdRef.current = window.grecaptcha.render(recaptchaWidgetRef.current, {
+            sitekey: SITE_KEY,
+          });
+        } catch (e) {
+          console.warn("recaptcha render error", e);
+        }
+      }
+    };
+
+    // cleanup
+    return () => {
+      try {
+        delete window.__fpRecaptchaOnLoad;
+      } catch (e) {}
+    };
+  }, []);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    if (typeof window === "undefined") {
+      setError("Client environment required");
+      setLoading(false);
+      return;
+    }
+
+    // get token from v2 checkbox
+    const recaptchaToken = window.grecaptcha ? window.grecaptcha.getResponse(widgetIdRef.current) : null;
+    if (!recaptchaToken) {
+      setError("Please complete the reCAPTCHA verification.");
+      setLoading(false);
+      return;
+    }
+
+    const form = e.target;
+    const payload = Object.fromEntries(new FormData(form).entries());
+    payload.recaptchaToken = recaptchaToken;
+
+    try {
+      const res = await fetch("/api/sheets", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error || data.details || "Submission failed.");
+      }
+
+      setSubmitted(true);
+      form.reset();
+      if (window.grecaptcha) {
+        // reset widget
+        try {
+          window.grecaptcha.reset(widgetIdRef.current);
+        } catch (e) {
+          // ignore
+        }
+      }
+    } catch (err) {
+      console.error("Submit error:", err);
+      setError(err.message || "Something went wrong.");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div className="min-h-screen font-sans text-gray-800">
+      <header className="sticky top-0 bg-white/90 backdrop-blur z-40 shadow-sm">
+        <nav className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <Logo />
+            <div>
+              <div className="text-lg font-bold">FP CAD Design Services</div>
+              <div className="text-xs text-gray-500">Waterloo Region, Ontario</div>
+            </div>
+          </div>
+        </nav>
+      </header>
+
+      <main>
+        {/* Hero */}
+        <section className="bg-gradient-to-b from-blue-900 to-blue-800 text-white py-20">
+          <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-8 items-center">
+            <div>
+              <motion.h1
+                className="text-4xl md:text-5xl font-extrabold leading-tight mb-4"
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                transition={{ delay: 0.1 }}
+              >
+                Precision CAD Drafting for Underground Telecom
+              </motion.h1>
+              <p className="text-lg text-blue-100 mb-6">
+                FP CAD Design Services specializes in underground telecommunication design — fiber, conduit, and micro-duct systems —
+                delivering permit-ready drawings for telecoms, engineering firms, and contractors.
+              </p>
+              <a href="#quote" className="inline-block bg-white text-blue-900 font-semibold px-5 py-3 rounded-lg shadow">
+                Get a Quote
+              </a>
+            </div>
+          </div>
+        </section>
+
+        {/* Quote */}
+        <section id="quote" className="py-16">
+          <div className="max-w-3xl mx-auto px-6">
+            <h2 className="text-2xl font-semibold text-center text-blue-900 mb-4">Request a Quote</h2>
+            <p className="text-center text-gray-600 mb-6">Tell us about your project and we’ll reply with a tailored quote.</p>
+
+            <div className="bg-white p-6 rounded-xl shadow">
+              {submitted ? (
+                <div className="text-green-600 text-center font-medium">Thank you! Your request has been received — we’ll be in touch shortly.</div>
+              ) : (
+                <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-4">
+                  <input name="name" required placeholder="Full Name" className="border rounded-md p-3" />
+                  <input name="email" type="email" required placeholder="Email Address" className="border rounded-md p-3" />
+                  <input name="company" placeholder="Company (optional)" className="border rounded-md p-3" />
+                  <textarea
+                    name="message"
+                    required
+                    placeholder="Project details (scope, locations, deliverables)"
+                    className="border rounded-md p-3 h-32"
+                  />
+
+                  {/* reCAPTCHA v2 checkbox widget placeholder */}
+                  <div className="mt-2 mb-4" ref={recaptchaWidgetRef}></div>
+
+                  {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
+
+                  <div className="flex justify-between items-center">
+                    <a href="/assets/FP-CAD-Brochure.pdf" download className="text-sm text-gray-600 underline">
+                      Download brochure
+                    </a>
+
+                    <button
+                      type="submit"
+                      className={`bg-blue-900 text-white px-5 py-2 rounded-md ${loading ? "opacity-80 cursor-wait" : ""}`}
+                      disabled={loading}
+                    >
+                      {loading ? "Sending..." : "Submit Request"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            <p className="text-xs text-gray-500 mt-3">Integrations available: Slack webhook and Google Sheets (requires serverless /api/sheets).</p>
+          </div>
+        </section>
+      </main>
+
+      <footer className="py-6 text-center text-sm text-gray-600">© {new Date().getFullYear()} FP CAD Design Services — All rights reserved.</footer>
+    </div>
+  );
+}

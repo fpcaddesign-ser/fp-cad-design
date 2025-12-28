@@ -1,219 +1,78 @@
-// Fp Cad Design Website — pages/index.js (React / Next.js)
-// Clean, validated, production-ready single-file frontend component.
-// - reCAPTCHA v2 (checkbox) client integration (site key embedded)
-// - Form posts JSON to /api/sheets (server-side handler must verify reCAPTCHA and write to Google Sheets)
-// - Loading / error / success UI
-// - Tailwind utility classes assumed (or adapt to your CSS)
+import type { NextApiRequest, NextApiResponse } from "next";
+import { google } from "googleapis";
 
-import { useState, useEffect, useRef } from "react";
-import { motion } from "framer-motion";
+export default async function handler(req: NextApiRequest, res: NextApiResponse) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ error: "Method not allowed" });
+  }
 
-    <svg className={className} viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-      <rect x="2" y="2" width="96" height="96" rx="12" fill="#0F4C81" />
-      <g transform="translate(18,22)" fill="#fff">
-        <path d="M6 50 L18 10 L30 50 Z" />
-        <rect x="36" y="10" width="8" height="40" rx="2" />
-        <rect x="54" y="10" width="8" height="40" rx="2" />
-      </g>
-    </svg>
-  );
-}
+  try {
+    const { name, email, company, message, recaptchaToken } = req.body;
 
-export default function HomePage() {
-  const [submitted, setSubmitted] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
-  const [recaptchaLoaded, setRecaptchaLoaded] = useState(false);
-
-  // Replace with your actual public reCAPTCHA v2 site key
-  const RECAPTCHA_SITE_KEY = "6LfcfCQsAAAAAO_OaQOZqZmU_VF0ByEBpqTsgcLa";
-
-  const widgetRef = useRef(null);
-  const widgetIdRef = useRef(null);
-
-  // Load reCAPTCHA script and render v2 checkbox
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-
-    // If already present, render widget
-    if (window.grecaptcha && typeof window.grecaptcha.render === "function") {
-      try {
-        widgetIdRef.current = window.grecaptcha.render(widgetRef.current, { sitekey: RECAPTCHA_SITE_KEY });
-        setRecaptchaLoaded(true);
-      } catch (e) {
-        console.warn("recaptcha render error", e);
-      }
-      return;
-    }
-
-    // Create global callback for onload
-    window.__fp_recaptcha_onload = () => {
-      try {
-        widgetIdRef.current = window.grecaptcha.render(widgetRef.current, { sitekey: RECAPTCHA_SITE_KEY });
-        setRecaptchaLoaded(true);
-      } catch (e) {
-        console.warn("recaptcha render error", e);
-      }
-    };
-
-    const script = document.createElement("script");
-    script.src = "https://www.google.com/recaptcha/api.js?onload=__fp_recaptcha_onload&render=explicit";
-    script.async = true;
-    script.defer = true;
-    document.body.appendChild(script);
-
-    return () => {
-      try { delete window.__fp_recaptcha_onload; } catch (e) {}
-    };
-  }, []);
-
-  const handleSubmit = async (e) => {
-    e.preventDefault();
-    setError(null);
-    setLoading(true);
-
-    if (typeof window === "undefined") {
-      setError("Client environment required");
-      setLoading(false);
-      return;
-    }
-
-    // Get reCAPTCHA token from rendered widget
-    const recaptchaToken = window.grecaptcha ? window.grecaptcha.getResponse(widgetIdRef.current) : null;
     if (!recaptchaToken) {
-      setError("Please complete the reCAPTCHA checkbox.");
-      setLoading(false);
-      return;
+      return res.status(400).json({ error: "Missing reCAPTCHA token" });
     }
 
-    const form = e.target;
-    const payload = Object.fromEntries(new FormData(form).entries());
-    payload.recaptchaToken = recaptchaToken;
+    // ✅ VERIFY reCAPTCHA
+    const captchaRes = await fetch(
+      "https://www.google.com/recaptcha/api/siteverify",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: `secret=${process.env.RECAPTCHA_SECRET_KEY}&response=${recaptchaToken}`,
+      }
+    );
 
-    try {
-      const res = await fetch("/api/sheets", {
+    const captchaData = await captchaRes.json();
+
+    if (!captchaData.success) {
+      return res.status(403).json({ error: "reCAPTCHA verification failed" });
+    }
+
+    // ✅ GOOGLE SHEETS AUTH
+    const auth = new google.auth.JWT(
+      process.env.GOOGLE_CLIENT_EMAIL,
+      undefined,
+      process.env.GOOGLE_PRIVATE_KEY?.replace(/\\n/g, "\n"),
+      ["https://www.googleapis.com/auth/spreadsheets"]
+    );
+
+    const sheets = google.sheets({ version: "v4", auth });
+
+    await sheets.spreadsheets.values.append({
+      spreadsheetId: process.env.GOOGLE_SHEET_ID,
+      range: "A1",
+      valueInputOption: "USER_ENTERED",
+      requestBody: {
+        values: [[
+          new Date().toISOString(),
+          name,
+          email,
+          company || "",
+          message,
+        ]],
+      },
+    });
+
+    // ✅ SLACK LEAD NOTIFICATION
+    if (process.env.SLACK_WEBHOOK_URL) {
+      await fetch(process.env.SLACK_WEBHOOK_URL, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify({
+          text:
+            `📥 *New FP CAD Design Lead*\n` +
+            `*Name:* ${name}\n` +
+            `*Email:* ${email}\n` +
+            `*Company:* ${company || "—"}\n` +
+            `*Message:* ${message}`,
+        }),
       });
-
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || data.details || "Submission failed");
-
-      setSubmitted(true);
-      form.reset();
-      try { if (window.grecaptcha) window.grecaptcha.reset(widgetIdRef.current); } catch (e) {}
-    } catch (err) {
-      console.error("Submission error", err);
-      setError(err.message || "An unexpected error occurred");
-    } finally {
-      setLoading(false);
     }
-  };
 
-  return (
-    <div className="min-h-screen bg-gray-50 text-gray-900">
-      <header className="bg-white shadow">
-        <div className="max-w-6xl mx-auto px-6 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-3">
-            <Logo />
-            <div>
-              <div className="font-bold text-lg">FP CAD Design Services</div>
-              <div className="text-sm text-gray-500">Waterloo Region, Ontario</div>
-            </div>
-          </div>
-          <nav className="hidden md:flex gap-6 text-sm">
-            <a href="#about" className="hover:underline">About</a>
-            <a href="#services" className="hover:underline">Services</a>
-            <a href="#quote" className="hover:underline">Request a Quote</a>
-            <a href="#contact" className="hover:underline">Contact</a>
-          </nav>
-        </div>
-      </header>
-
-      <main>
-        <section className="bg-gradient-to-b from-blue-900 to-blue-800 text-white py-20">
-          <div className="max-w-6xl mx-auto px-6 grid md:grid-cols-2 gap-8 items-center">
-            <div>
-              <motion.h1 className="text-4xl md:text-5xl font-extrabold mb-4" initial={{ opacity: 0, y: -10 }} animate={{ opacity: 1, y: 0 }}>
-                Precision CAD Drafting for Underground Telecom
-              </motion.h1>
-              <p className="text-lg text-blue-100 mb-6">FP CAD Design Services specializes in underground telecommunication design — fiber, conduit, and micro-duct systems. Permit-ready drawings for telecoms, engineering firms, and contractors.</p>
-              <a href="#quote" className="inline-block bg-white text-blue-900 px-5 py-3 rounded-lg font-semibold">Get a Quote</a>
-            </div>
-          </div>
-        </section>
-
-        <section id="about" className="py-16">
-          <div className="max-w-5xl mx-auto px-6 text-center">
-            <h2 className="text-3xl font-semibold text-blue-900 mb-4">About FP CAD Design Services</h2>
-            <p className="text-lg text-gray-700">FP CAD Design Services is a professional CAD drafting business based in the Waterloo Region, Ontario. The company specializes in underground telecommunication design, including fiber, conduit, and micro-duct systems. Founded by Fritz Point-Du-Jour, who brings over nine years of experience, the business provides precise, permit-ready drawings for telecom companies and engineering firms.</p>
-          </div>
-        </section>
-
-        <section id="services" className="py-16 bg-gray-50">
-          <div className="max-w-6xl mx-auto px-6">
-            <h2 className="text-3xl font-semibold text-center text-blue-900 mb-8">Our Services</h2>
-            <div className="grid md:grid-cols-3 gap-6">
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h3 className="font-semibold text-lg mb-2">Underground Fiber Network Design</h3>
-                <p className="text-sm text-gray-600">CAD layouts for underground fiber — conduits, micro-ducts, jointing.</p>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h3 className="font-semibold text-lg mb-2">Permit & Construction Drawings</h3>
-                <p className="text-sm text-gray-600">Permit-ready drawings meeting municipal requirements.</p>
-              </div>
-
-              <div className="bg-white p-6 rounded-xl shadow">
-                <h3 className="font-semibold text-lg mb-2">As-Built & Redline Updates</h3>
-                <p className="text-sm text-gray-600">Accurate as-built documentation and redline updates after construction or field changes.</p>
-              </div>
-            </div>
-          </div>
-        </section>
-
-        <section id="quote" className="py-16">
-          <div className="max-w-3xl mx-auto px-6">
-            <h2 className="text-2xl font-semibold text-center text-blue-900 mb-4">Request a Quote</h2>
-            <p className="text-center text-gray-600 mb-6">Tell us about your project and we’ll reply with a tailored quote.</p>
-
-            <div className="bg-white p-6 rounded-xl shadow">
-              {submitted ? (
-                <div className="text-green-600 text-center font-medium">Thank you! Your request has been received — we’ll be in touch shortly.</div>
-              ) : (
-                <form onSubmit={handleSubmit} className="grid grid-cols-1 gap-4">
-                  <input name="name" required placeholder="Full Name" className="border rounded-md p-3" />
-                  <input name="email" type="email" required placeholder="Email Address" className="border rounded-md p-3" />
-                  <input name="company" placeholder="Company (optional)" className="border rounded-md p-3" />
-                  <textarea name="message" required placeholder="Project details (scope, locations, deliverables)" className="border rounded-md p-3 h-32"></textarea>
-
-                  <div className="mt-2 mb-4" ref={widgetRef}></div>
-
-                  {error && <div className="text-red-600 text-sm mb-2">{error}</div>}
-
-                  <div className="flex justify-between items-center">
-                    <a href="/assets/FP-CAD-Brochure.pdf" download className="text-sm text-gray-600 underline">Download brochure</a>
-                    <button type="submit" className={`bg-blue-900 text-white px-5 py-2 rounded-md ${loading ? "opacity-80 cursor-wait" : ""}`} disabled={loading}>{loading ? "Sending..." : "Submit Request"}</button>
-                  </div>
-                </form>
-              )}
-            </div>
-
-            <p className="text-xs text-gray-500 mt-3">Integrations available: Slack webhook and Google Sheets (requires serverless /api/sheets). See deployment notes in the project README.</p>
-          </div>
-        </section>
-
-        <section id="contact" className="py-12 bg-blue-900 text-white">
-          <div className="max-w-4xl mx-auto px-6 text-center">
-            <h3 className="text-xl font-semibold mb-2">Contact</h3>
-            <p className="text-sm">Email: <a href="mailto:fpcaddesign@gmail.com" className="underline">fpcaddesign@gmail.com</a></p>
-            <p className="text-sm">Phone: <a href="tel:+16475732397" className="underline">(647) 573-2397</a></p>
-            <p className="text-sm">Location: Waterloo Region, Ontario</p>
-          </div>
-        </section>
-      </main>
-
-      <footer className="py-6 text-center text-sm text-gray-600">© {December()(2025)} FP CAD Design Services — All rights reserved.</footer>
-
+    return res.status(200).json({ success: true });
+  } catch (error) {
+    console.error("API error:", error);
+    return res.status(500).json({ error: "Internal server error" });
+  }
 }
